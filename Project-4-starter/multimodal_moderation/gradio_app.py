@@ -273,11 +273,6 @@ class ChatSessionWithTracing:
                         # Content flagged - block and return error
                         feedback = f"⚠️ Content flagged: {safety_message}"
                         response = "[This content was flagged by moderation and not sent to the AI. Please try again.]"
-
-                        # TODO: set an attribute "feedback" in the tracing span with the feedback message
-                        # HINT: use span.set_attribute with "feedback" as the key and feedback as the value
-                        span.set_attribute("feedback", feedback)
-
                         return response, past_messages, feedback
 
                     # Content safe - add to prompt
@@ -341,6 +336,16 @@ class ChatSessionWithTracing:
                     f"Please try again or contact ACME support if the issue persists."
                 )
 
+    def record_feedback(self, data: gr.LikeData):
+        """Record user feedback in its own tracing span."""
+        with tracer.start_as_current_span(
+            "feedback",
+            context=trace.set_span_in_context(self.conversation_span),
+        ) as span:
+            span.set_attribute("session.id", self.session_id)
+            span.set_attribute("feedback.reaction", "like" if data.liked else "dislike")
+            span.set_attribute("feedback.value", str(data.value))
+
     def end_conversation(self):
         """
         End the conversation and close the tracing span.
@@ -392,6 +397,13 @@ def create_chat_interface() -> gr.Blocks:
             # Left column: Chat interface (75% width)
             with gr.Column(scale=3):
                 # TODO: fill the missing arguments to gr.ChatInterface
+                chatbot = gr.Chatbot(
+                    show_copy_button=True,
+                    type="messages",  # Use messages format for multimodal support
+                    placeholder="👋 Start by greeting the customer or introducing yourself. The AI customer will respond with their complaint.",
+                    height="75vh",
+                )
+
                 gr.ChatInterface(
                     fn=chat_session.chat_with_gemini, # This is the function called at each turn, and should be chat_session.chat_with_gemini
                     type="messages",  # Use newer messages format (supports multimodal)
@@ -403,18 +415,15 @@ def create_chat_interface() -> gr.Blocks:
                         sources=["upload", "microphone"],  # Allow file upload and recording
                         placeholder="Type a message, upload files, or record audio...",
                     ),
-                    chatbot=gr.Chatbot(
-                        show_copy_button=True,
-                        type="messages",  # Use messages format for multimodal support
-                        placeholder="👋 Start by greeting the customer or introducing yourself. The AI customer will respond with their complaint.",
-                        height="75vh",
-                    ),
+                    chatbot=chatbot,
                     # TODO: in order to use pydantic AI with Gradio, we need to pass the past_messages_state
                     # as additional_inputs and additional_outputs. Additional outputs should also include feedback_display
                     # so the second value returned by our function is directly passed in to feedback_display.
                     additional_inputs=[past_messages_state],  # This should be a list containing past_messages_state
                     additional_outputs=[past_messages_state, feedback_display],  # This should be a list containing past_messages_state and feedback_display
                 )
+
+                chatbot.like(chat_session.record_feedback)
 
             # Right column: Feedback and guidelines (25% width)
             with gr.Column(scale=1):
